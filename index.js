@@ -1,15 +1,34 @@
 const express = require("express");
 const cors = require("cors");
 require("dotenv").config();
+const cookieParser = require("cookie-parser");
+const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const port = process.env.PORT || 3000;
 
 app = express();
+const port = process.env.PORT || 3000;
 
 // middle  wear
+app.use(cors({ origin: ["http://localhost:5173"], credentials:true }));
 app.use(express.json());
-app.use(cors());
-
+app.use(cookieParser()); // Parse cookies from incoming requests
+// const logger= (req, res, next)=>{
+//   console.log('inside the logger', )
+//   next()
+// }
+const verifyToken = (req, res, next)=>{
+  const token = req?.cookies?.token 
+  if(!token){
+    return res.status(401).send({message:'unAuthorize Access'})
+  }
+  jwt.verify(token, process.env.JWT_SECRET, (err, decoded)=>{
+    if(err){
+      return res.status(401).send({message:'unAuthorize access'})
+    }
+    req.user= decoded 
+    next()
+  })
+}
 const uri = `mongodb+srv://${process.env.User_Name}:${process.env.PassWord}@cluster0.34ihq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
@@ -30,6 +49,17 @@ async function run() {
     const jobApplicationCollection = client
       .db("jobsPortal")
       .collection("job_applications");
+    // !Auth Related APIs
+    app.post("/jwt", async (req, res) => {
+      const user = req.body;
+      const token = jwt.login(process.env.JWT_SECRET, { expiresIn: "5h" });
+      res
+        .cookie("token", token, {
+          httpOnly: true,
+          secure: false,
+        })
+        .send({ success: true });
+    });
     //! create job array
     app.get("/jobs", async (req, res) => {
       const email = req.query.email;
@@ -86,13 +116,23 @@ async function run() {
     });
 
     // ! Show the application into client side
-    app.get("/job_application", async (req, res) => {
+    app.get("/job_application",verifyToken, async (req, res) => {
       const email = req.query.email;
+
+      // !cookies 
+      console.log('cookies -> ', req.cookies)
+      // ?
+
       const query = { applicant_email: email };
-      const result = await jobApplicationCollection.find(query).toArray();
-      for (const application of result) {
-        const query1 = { _id: new ObjectId(application.job_id) };
-        const job = await jobCollection.findOne(query1);
+      const applications = await jobApplicationCollection.find(query).toArray();
+      if(req.user.email !== req.query.email){
+// console.log('hello')
+return res.status(403).send({message:'Forbidden'})
+      }
+      for (const application of applications) {
+        const job = await jobCollection.findOne({
+          _id: new ObjectId(application.job_id),
+        });
         if (job) {
           application.title = job.title;
           application.company = job.company;
@@ -100,21 +140,24 @@ async function run() {
           application.location = job.location;
         }
       }
+      res.send(applications);
+    });
+    // ! update data Api for VewApplications page
+    app.patch("job_applications", async (req, res) => {
+      const id = req.params.id;
+      const data = req.body;
+      const filter = { _id: new ObjectId(id) };
+      const updatedDoc = {
+        $set: {
+          status: data.status,
+        },
+      };
+      const result = await jobApplicationCollection.updateOne(
+        filter,
+        updatedDoc
+      );
       res.send(result);
     });
-    // ! update data Api for VewApplications page 
-    app.patch('job_applications', async(req, res )=>{
-      const id = req.params.id
-      const data = req.body  
-      const filter = {_id: new ObjectId(id) }
-      const updatedDoc = {
-        $set:{
-          status: data.status
-        }
-      }
-      const result = await jobApplicationCollection.updateOne(filter, updatedDoc)
-      res.send(result)
-    })
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
